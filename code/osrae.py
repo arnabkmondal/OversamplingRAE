@@ -12,9 +12,13 @@ import math
 from sklearn.metrics import confusion_matrix
 from pathlib import Path
 
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+  tf.config.experimental.set_memory_growth(gpu, True)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='cifar10',
-                    choices=['mnist', 'fashion', 'svhn', 'cifar10', 'cifar100', 'celeba'])
+                    choices=['mnist', 'fashion', 'svhn', 'cifar10', 'celeba'])
 parser.add_argument('--z_dim', type=int, default=-1)
 parser.add_argument('--lr', type=float, default=0.0002)
 parser.add_argument('--batch_size', type=int, default=64)
@@ -28,9 +32,6 @@ parser.add_argument('--gan_loss_fn', type=str, default='wgan',
 parser.add_argument('--gp', type=int, default=0, choices=[0, 1])
 parser.add_argument('--gradient_penalty_weight', type=float, default=10)
 parser.add_argument('--disc_training_ratio', type=int, default=5)
-parser.add_argument('--beta', type=int, default=1)
-parser.add_argument('--exp', type=str, default='run1')
-
 
 args = parser.parse_args()
 
@@ -41,15 +42,13 @@ if args.z_dim == -1:
         args.z_dim = 128
     elif args.dataset == 'cifar10':
         args.z_dim = 256
-    elif args.dataset == 'cifar100':
-        args.z_dim = 512
     elif args.dataset == 'celeba':
         args.z_dim = 256
     else:
         raise Exception(f'Please Provide Latent Dimension of AE for {args.dataset} Dataset.')
 
-trained_models_dir = f'./osa_Models/{args.dataset}/zdim{args.z_dim}-{args.exp}/'
-training_data_dir = f'./osa_Samples/{args.dataset}/zdim{args.z_dim}-{args.exp}/'
+trained_models_dir = f'./osa_Models_stable/{args.dataset}/zdim{args.z_dim}/'
+training_data_dir = f'./osa_Samples_stable/{args.dataset}/zdim{args.z_dim}/'
 
 os.makedirs(trained_models_dir, exist_ok=True)
 os.makedirs(training_data_dir, exist_ok=True)
@@ -94,6 +93,7 @@ def build_encoder(h, w, c, nz):
     x = tf.keras.layers.LeakyReLU(0.2)(x)
     x = tf.keras.layers.Dropout(0.4)(x)
 
+    # z = tf.keras.layers.Dense(nz, activation=None, activity_regularizer=tf.keras.regularizers.l2(1e-4))(x)
     z = tf.keras.layers.Dense(nz, activation=None)(x)
 
     return tf.keras.Model(inp, z, name="encoder")
@@ -106,22 +106,23 @@ def build_mixer(nz, n_class, n_component=2):
     lbl = tf.keras.Input(shape=(n_class,), name='input-label')
 
     x = tf.keras.layers.Concatenate()([inp1, inp2, noise, lbl])
+    # x = tf.keras.layers.Concatenate()([inp1, inp2, noise])
 
     x = tf.keras.layers.Dense(1024, activation=None)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU()(x)
     x = tf.keras.layers.Dropout(0.4)(x)
-
+    
     x = tf.keras.layers.Dense(1024, activation=None)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU()(x)
     x = tf.keras.layers.Dropout(0.4)(x)
-
+    
     x = tf.keras.layers.Dense(1024, activation=None)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU()(x)
     x = tf.keras.layers.Dropout(0.4)(x)
-
+    
     x = tf.keras.layers.Dense(1024, activation=None)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.ReLU()(x)
@@ -135,7 +136,7 @@ def build_mixer(nz, n_class, n_component=2):
 def build_decoder(h, w, c, nz, n_class):
     inp = tf.keras.Input(shape=(nz,), name="latent")
     lbl = tf.keras.Input(shape=(n_class,), name='input-label')
-
+    
     x = tf.keras.layers.Concatenate()([inp, lbl])
     x = tf.keras.layers.Dense(1024, activation=None)(x)
     x = tf.keras.layers.BatchNormalization()(x)
@@ -168,16 +169,19 @@ def build_discriminator(h, w, c, n_class):
 
     x = tf.keras.layers.Conv2D(
         filters=64, kernel_size=(4, 4), strides=(2, 2), padding='same', activation=None,  use_bias=False)(inp)
+    # x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.LeakyReLU(0.2)(x)
 
     x = tf.keras.layers.Conv2D(
         filters=128, kernel_size=(4, 4), strides=(2, 2), padding='same', activation=None,  use_bias=False)(x)
+    # x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.LeakyReLU(0.2)(x)
 
     x = tf.keras.layers.Flatten()(x)
     x = tf.keras.layers.Concatenate()([x, lbl])
 
     x = tf.keras.layers.Dense(1024, activation=None)(x)
+    # x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.LeakyReLU(0.2)(x)
 
     logit = tf.keras.layers.Dense(1, activation=None)(x)
@@ -335,7 +339,7 @@ def step(values):
 
 # augments images with a probability that is dynamically updated during training
 class AdaptiveAugmenter(tf.keras.Model):
-    def __init__(self, image_size, channels, max_translation=0.125, max_rotation=0.125,
+    def __init__(self, image_size, channels, max_translation=0.125, max_rotation=0.125, 
                  max_zoom=0.25, target_acc=0.85, integration_steps=1000):
         super().__init__()
 
@@ -401,8 +405,8 @@ class AdaptiveAugmenter(tf.keras.Model):
             )
         )
 
-
-class OverSamplingRAE:
+    
+class OverSamplingAE:
     def __init__(self, bs, z_dim, lr, models_dir, samples_dir,
                  training_steps, save_interval, plot_interval, bn_axis, gradient_penalty_weight,
                  disc_training_ratio, ae_loss_fn, gan_loss_fn, gp):
@@ -432,7 +436,7 @@ class OverSamplingRAE:
         self.lat_reg = None
         self.x_train, self.y_train, self.side_length, self.channels = trainS, trainL.flatten(), trainS.shape[1], trainS.shape[3]
         self.num_class = len(np.unique(self.y_train))
-
+        
         self.augmenter = AdaptiveAugmenter(self.side_length, self.channels)
         self.encoder = build_encoder(self.side_length, self.side_length, self.channels, self.z_dim)
         self.decoder = build_decoder(self.side_length, self.side_length, self.channels, self.z_dim, self.num_class)
@@ -486,7 +490,8 @@ class OverSamplingRAE:
             fake_img_logits = self.discriminator(
                 [fake_images, tf.concat([y_onehot, y_onehot, y_onehot, y_onehot], axis=0)], training=True)
 
-            ssim_loss = tf.reduce_mean(1 - tf.image.ssim(x, x_hat, max_val=1.0))
+            # ssim_loss = tf.reduce_mean(1 - tf.image.ssim(x, x_hat, max_val=1.0))
+            mae_loss = tf.keras.losses.MeanAbsoluteError()(x, x_hat)
 
             clf_loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(
                 tf.concat([y1, y2, y1, y2], axis=0), tf.concat([y_pred, y_mix_pred], axis=0))
@@ -510,7 +515,7 @@ class OverSamplingRAE:
         ):
             ema_weight.assign(self.ema * ema_weight + (1 - self.ema) * weight)
 
-        return ssim_loss, clf_loss, mixer_loss, img_gen_loss, fake_clf_loss
+        return mae_loss, clf_loss, mixer_loss, img_gen_loss, fake_clf_loss
 
     @tf.function
     def clf_dec_train_step(self, x1, x2, y1, y2, y_onehot):
@@ -544,7 +549,8 @@ class OverSamplingRAE:
             fake_img_logits = self.discriminator(
                 [fake_images, tf.concat([y_onehot, y_onehot, y_onehot, y_onehot], axis=0)], training=True)
 
-            ssim_loss = tf.reduce_mean(1 - tf.image.ssim(x, x_hat, max_val=1.0))
+            # ssim_loss = tf.reduce_mean(1 - tf.image.ssim(x, x_hat, max_val=1.0))
+            mae_loss = tf.keras.losses.MeanAbsoluteError()(x, x_hat)
 
             clf_loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(
                 tf.concat([y1, y2, y1, y2], axis=0), tf.concat([y_pred, y_mix_pred], axis=0))
@@ -559,7 +565,7 @@ class OverSamplingRAE:
                 random_label, y_mix_pred
             )
 
-            enc_loss = 2 * clf_loss * float(args.beta) + 0.05 * ssim_loss
+            enc_loss = 5 * clf_loss + 1.0 * mae_loss
             dec_loss = fake_clf_loss
 
         enc_g = clf_tape.gradient(enc_loss, self.encoder.trainable_variables + self.linear_probe.trainable_variables)
@@ -585,7 +591,7 @@ class OverSamplingRAE:
         ):
             ema_weight.assign(self.ema * ema_weight + (1 - self.ema) * weight)
 
-        return ssim_loss, clf_loss, mixer_loss, img_gen_loss, fake_clf_loss
+        return mae_loss, clf_loss, mixer_loss, img_gen_loss, fake_clf_loss
 
     @tf.function
     def disc_train_step(self, x1, x2, y1, y2, y_onehot):
@@ -639,7 +645,7 @@ class OverSamplingRAE:
             img_disc_loss += 10 * gp
 
         img_disc_g = img_disc_tape.gradient(img_disc_loss, self.discriminator.trainable_variables)
-
+        
         self.augmenter.update(real_img_logits)
 
         self.img_disc_trainer.apply_gradients(zip(img_disc_g, self.discriminator.trainable_variables))
@@ -663,7 +669,7 @@ class OverSamplingRAE:
         return x_gen
 
     def train(self):
-        ssim_loss_buf = []
+        mae_loss_buf = []
         clf_loss_buf = []
         fake_clf_loss_buf = []
         img_gen_loss_buf = []
@@ -678,16 +684,21 @@ class OverSamplingRAE:
                     del true_data_gen
                 true_data_gen = TrainingDataGenerator(self.x_train, self.y_train, self.num_class, self.side_length,
                                                       self.channels)
+
             x1, x2, y = true_data_gen.get_batch(bs=self.bs, cl=-1)
             y_onehot = tf.keras.utils.to_categorical(y, self.num_class)
-            ssim_l, clf_l, mix_l, img_gen_l, fake_clf_l = \
-                self.gen_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot) if step % 5 != 0 else \
-                    self.clf_dec_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot)
-            for _ in range(5):
-                x1, x2, y = true_data_gen.get_batch(bs=self.bs, cl=-1)
-                y_onehot = tf.keras.utils.to_categorical(y, self.num_class)
-                img_disc_l = self.disc_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot)
 
+            if step % 5 != 0 or step == 0:
+                mae_l, clf_l, mix_l, img_gen_l, fake_clf_l = \
+                    self.gen_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot)
+                for _ in range(5):
+                    x1, x2, y = true_data_gen.get_batch(bs=self.bs, cl=-1)
+                    y_onehot = tf.keras.utils.to_categorical(y, self.num_class)
+                    img_disc_l = self.disc_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot)
+            else:
+                mae_l, clf_l, mix_l, img_gen_l, fake_clf_l = \
+                    self.clf_dec_train_step(x1.astype(np.float32), x2.astype(np.float32), y, y, y_onehot)
+            
             if step % (self.plot_interval // 10) == 0:
                 reconstructed_images = self.reconstruct(x1, y_onehot)
                 image_grid(images=np.concatenate((x1[0:8], reconstructed_images[0:8]), 0),
@@ -696,7 +707,7 @@ class OverSamplingRAE:
                 image_grid(images=np.concatenate((x1[0:8], gen[0:8], x2[0:8]), 0).reshape(-1, self.side_length, self.side_length, self.channels),
                            sv_path=f'{self.samples_dir}gen_{step}.png', img_per_row=8)
 
-                ssim_loss_buf.append(ssim_l.numpy())
+                mae_loss_buf.append(mae_l.numpy())
                 mixer_loss_buf.append(mix_l.numpy())
                 clf_loss_buf.append(clf_l.numpy())
                 fake_clf_loss_buf.append(fake_clf_l.numpy())
@@ -705,20 +716,21 @@ class OverSamplingRAE:
                 steps_buf.append(step)
                 acsa_buf.append(compute_acsa(self.encoder_ema, self.linear_probe_ema, testS, testL))
 
+
                 print(HEADER +
-                      f'Training an Oversampling-RAE ({self.gan_loss_fn.upper()}) Model on {self.dataset.upper()}\n' + END_C)
+                      f'Training an CAE ({self.gan_loss_fn.upper()}) Model on {self.dataset.upper()}\n' + END_C)
                 print(HEADER + f'Latent Dim: {self.z_dim}; AE Loss Fn: {self.ae_loss_fn}, '
                                f'GAN Loss Fn: {self.gan_loss_fn}\n' + END_C)
                 print(WARNING + f'Step: {steps_buf[-1]}, ' + END_C + OK_BLUE +
-                      f'SSIM Loss: {ssim_loss_buf[-1]:.4f}, Mixer Loss: {mixer_loss_buf[-1]:.4f}, '
+                      f'MAE Loss: {mae_loss_buf[-1]:.4f}, Mixer Loss: {mixer_loss_buf[-1]:.4f}, '
                       f'Clf Loss: {clf_loss_buf[-1]:.4f}, Fake Clf Loss: {fake_clf_loss_buf[-1]:.4f}, '
                       f'Image Gen Loss: {img_gen_loss_buf[-1]:.4f}, '
                       f'Image Disc Loss: {img_disc_loss_buf[-1]:.4f}, ACSA: {acsa_buf[-1]:.4f}\n'
                       + END_C)
 
             if step % self.plot_interval == 0 and step > 0:
-                plot_graph(x=steps_buf, y=ssim_loss_buf, x_label='Steps', y_label='SSIM Loss',
-                           samples_dir=self.samples_dir, img_name='ssim_loss.png')
+                plot_graph(x=steps_buf, y=mae_loss_buf, x_label='Steps', y_label='MAE Loss',
+                           samples_dir=self.samples_dir, img_name='mae_loss.png')
                 plot_graph(x=steps_buf, y=mixer_loss_buf, x_label='Steps', y_label='Mixer Loss',
                            samples_dir=self.samples_dir, img_name='mixer_loss.png')
                 plot_graph(x=steps_buf, y=clf_loss_buf, x_label='Steps', y_label='Clf Loss',
@@ -750,8 +762,8 @@ class OverSamplingRAE:
                 tf.keras.models.save_model(self.mixer_net, f'{self.model_dir}/mixer_net_{step}', overwrite=True,
                                            include_optimizer=True, save_format='tf', signatures=None, options=None)
 
-        with open(self.samples_dir + 'ssim_loss.pkl', 'wb') as fp:
-            pickle.dump(ssim_loss_buf, fp)
+        with open(self.samples_dir + 'mae_loss.pkl', 'wb') as fp:
+            pickle.dump(mae_loss_buf, fp)
         with open(self.samples_dir + 'mixer_loss.pkl', 'wb') as fp:
             pickle.dump(mixer_loss_buf, fp)
         with open(self.samples_dir + 'clf_loss.pkl', 'wb') as fp:
@@ -770,7 +782,7 @@ class OverSamplingRAE:
         return
 
 tf.compat.v1.reset_default_graph()
-model = OverSamplingRAE(
+model = OverSamplingAE(
     bs=args.batch_size, z_dim=args.z_dim, lr=args.lr,
     models_dir=trained_models_dir, samples_dir=training_data_dir,
     training_steps=args.training_steps, save_interval=args.save_interval,
