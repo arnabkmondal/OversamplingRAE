@@ -232,7 +232,7 @@ class TrainingDataGenerator:
             filter = np.where(self.y_train == class_label)
             x_train, y_train = self.x_train[filter[0]], self.y_train[filter[0]]
             n_digits = x_train.shape[0]
-            n_rnd_idx = 40
+            n_rnd_idx = 400
             image_indices = np.random.default_rng().choice(n_digits, size=n_rnd_idx, replace=n_digits < n_rnd_idx)
             self.img1.append(x_train[image_indices[:n_rnd_idx // 2], :, :, :])
             self.img2.append(x_train[image_indices[n_rnd_idx // 2:], :, :, :])
@@ -565,7 +565,7 @@ class OverSamplingAE:
                 random_label, y_mix_pred
             )
 
-            enc_loss = 5 * clf_loss + 1.0 * mae_loss
+            enc_loss = 5 * clf_loss + 0.01 * mae_loss
             dec_loss = fake_clf_loss
 
         enc_g = clf_tape.gradient(enc_loss, self.encoder.trainable_variables + self.linear_probe.trainable_variables)
